@@ -3,6 +3,30 @@
 All notable changes to Kensaku. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Dark-mode tray icon on Windows** (#46). The Windows tray icon now has a
+  light, high-contrast variant that is used when the app theme is set to
+  `dark`, so the icon stays legible on a dark taskbar. It follows the **app
+  theme** (Settings → Appearance), not the Windows taskbar setting, and swaps
+  immediately when the theme changes. Both assets (`tray-dark.png` /
+  `tray-light.png`) are embedded at compile time; no extra files ship at
+  runtime. macOS and Linux are unchanged.
+- **Recent searches on the home screen** (#48). An empty search box now offers
+  the last five queries as one-click pills, or a quiet row above the recent
+  files. History is deduplicated case-insensitively and an extended query
+  replaces its shorter prefix. It lives in memory, so it is cleared when
+  Kensaku quits or from the row's Clear action.
+
+### Fixed
+- **Every first scan reported itself as a health warning** (#142, #146). The
+  Health tab flagged any crawl that re-read more than half the corpus, but a
+  first scan reads everything by definition, and a crawl over a recreated index
+  does the same. New installs were told to "report this" for behaviour that is
+  expected. The crawl report now records how many entries were new, so only
+  re-reads of files the index had already seen are flagged.
+
 ## [1.0.16] — 2026-11-05
 
 ### Fixed

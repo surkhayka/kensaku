@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,27 +14,24 @@ import {
   HomeData,
   KensakuConfig,
   DoctorReport,
+  TransferReport,
 } from "./types";
-import { SetupModal } from "./components/SetupModal";
-import { DuplicatesModal } from "./components/DuplicatesModal";
 import { SlashMenu, SlashCommand } from "./components/SlashMenu";
 import { ScopeMenu } from "./components/ScopeMenu";
 import { HomeView } from "./components/HomeView";
 import { ResultItem, ResultView } from "./components/ResultItem";
-import { Settings } from "./components/SettingsModal";
 import { FilterChips } from "./components/FilterChips";
 import { KeyHintStrip } from "./components/KeyHintStrip";
 import { ContextMenu, ContextMenuItem } from "./components/ContextMenu";
 import { DetailsDialog } from "./components/DetailsDialog";
-import { HelpDialog } from "./components/HelpDialog";
 import { SearchBar } from "./components/SearchBar";
 import { CategoryChips } from "./components/CategoryChips";
 import { ResultControls } from "./components/ResultControls";
 import { VirtualGrid } from "./components/VirtualGrid";
 import { FileRow } from "./components/FileRow";
+import { rangeSelect, toggle, type SelectMods } from "./lib/selection";
 import { normalizeTheme } from "./hooks/useTheme";
 import { useLanguage } from "./hooks/useLanguage";
-import { PreviewDialog } from "./components/PreviewDialog";
 import { classify } from "./lib/categories";
 import { shouldHideOnBlur } from "./lib/dismiss";
 import { useMeasuredHeight } from "./lib/useMeasuredHeight";
@@ -58,6 +55,13 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
+
+// Dialogs load on first open so the window's initial bundle stays small.
+const SetupModal = lazy(() => import("./components/SetupModal").then((m) => ({ default: m.SetupModal })));
+const DuplicatesModal = lazy(() => import("./components/DuplicatesModal").then((m) => ({ default: m.DuplicatesModal })));
+const Settings = lazy(() => import("./components/SettingsModal").then((m) => ({ default: m.Settings })));
+const HelpDialog = lazy(() => import("./components/HelpDialog").then((m) => ({ default: m.HelpDialog })));
+const PreviewDialog = lazy(() => import("./components/PreviewDialog").then((m) => ({ default: m.PreviewDialog })));
 
 const SNIPPET_LRU_LIMIT = 200;
 
@@ -112,6 +116,9 @@ function App() {
   const [facetInclude, setFacetInclude] = useState<Set<string>>(new Set());
   const [facetExclude, setFacetExclude] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Explicit multi-selection (Ctrl/Shift click, Ctrl+A); empty means just the focused row.
+  const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const anchorRef = useRef(0);
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatus | null>(null);
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
@@ -272,11 +279,26 @@ function App() {
 
   /* ---------------- home data ---------------- */
 
+  const recordQuery = useCallback((q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed || trimmed.startsWith("/")) return;
+    invoke("record_recent_query", { query: trimmed }).catch(() => {});
+  }, []);
+
   const loadHome = useCallback(async () => {
     try {
       setHome(await invoke<HomeData>("get_home_data"));
     } catch (err) {
       console.error("Home data error:", err);
+    }
+  }, []);
+
+  const handleClearRecentQueries = useCallback(async () => {
+    try {
+      await invoke("clear_recent_queries");
+      setHome((prev) => (prev ? { ...prev, recent_queries: [] } : prev));
+    } catch (err) {
+      console.error("Failed to clear recent queries:", err);
     }
   }, []);
 
@@ -292,14 +314,34 @@ function App() {
       .then(setIndexingStatus)
       .catch((err) => console.error("Initial status error:", err));
 
+    // The backend emits from many places during a crawl. Re-rendering the whole
+    // app per event costs more than the indexer's own work, so apply at most
+    // one update per 250 ms; the latest payload always lands, so the final
+    // "idle" state is never dropped.
     let unlisten: (() => void) | undefined;
-    listen<IndexingStatus>("indexing-status", (event) => setIndexingStatus(event.payload))
+    let pending: IndexingStatus | null = null;
+    let timer: number | undefined;
+    let lastApplied = 0;
+    const apply = () => {
+      timer = undefined;
+      if (!pending) return;
+      setIndexingStatus(pending);
+      pending = null;
+      lastApplied = Date.now();
+    };
+    listen<IndexingStatus>("indexing-status", (event) => {
+      pending = event.payload;
+      const wait = 250 - (Date.now() - lastApplied);
+      if (wait <= 0) apply();
+      else if (timer === undefined) timer = window.setTimeout(apply, wait);
+    })
       .then((off) => {
         unlisten = off;
       })
       .catch((err) => console.error("Event listen error:", err));
 
     return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
       if (unlisten) unlisten();
     };
   }, [isSetupComplete]);
@@ -310,6 +352,7 @@ function App() {
     setFacetInclude(new Set());
     setFacetExclude(new Set());
     setSaveOpen(false);
+    setSelectedPaths(new Set());
   }, [query]);
 
   useEffect(() => {
@@ -324,6 +367,7 @@ function App() {
       setInterpretation([]);
       setFacets(undefined);
       setSelectedIndex(0);
+      loadHome();
       return;
     }
 
@@ -375,6 +419,9 @@ function App() {
           setInterpretation(res.interpretation ?? []);
           setFacets(res.facets);
           setSelectedIndex(0);
+          if (merged.length > 0 && query.trim()) {
+            recordQuery(query);
+          }
 
           // Snippets are fetched by the visibility observer below (or the
           // no-IntersectionObserver fallback) so off-screen rows never pay
@@ -386,7 +433,7 @@ function App() {
     }, 40);
 
     return () => clearTimeout(timer);
-  }, [query, sort, isSetupComplete]);
+  }, [query, sort, isSetupComplete, loadHome]);
 
   // Fetch snippets only for rows that are actually visible (or the first 20
   // when IntersectionObserver is unavailable). Results are patched by path
@@ -566,22 +613,24 @@ function App() {
   const hideAfterOpen = config ? config.app_mode !== "app" : false;
 
   const handleOpenFile = useCallback(async (path: string) => {
+    if (query.trim()) recordQuery(query);
     try {
       await invoke("open_file", { path });
       if (hideAfterOpen) await invoke("hide_window");
     } catch (err) {
       console.error("Open file error:", err);
     }
-  }, [hideAfterOpen]);
+  }, [hideAfterOpen, query, recordQuery]);
 
   const handleOpenFolder = useCallback(async (path: string) => {
+    if (query.trim()) recordQuery(query);
     try {
       await invoke("open_folder", { path });
       if (hideAfterOpen) await invoke("hide_window");
     } catch (err) {
       console.error("Open folder error:", err);
     }
-  }, [hideAfterOpen]);
+  }, [hideAfterOpen, query, recordQuery]);
 
   const handleRunCommand = useCallback(async (cmdStr: string) => {
     try {
@@ -778,6 +827,61 @@ function App() {
   );
   const navList = hasQuery ? displayResults : homeNavList;
 
+  const pickRow = useCallback(
+    (idx: number, mods?: SelectMods) => {
+      const path = displayResults[idx]?.path;
+      if (!path) return;
+      if (mods?.range) {
+        const anchor = selectedPaths.size > 0 ? anchorRef.current : selectedIndex;
+        setSelectedPaths(rangeSelect(displayResults.map((r) => r.path), anchor, idx));
+      } else if (mods?.toggle) {
+        const focused = displayResults[selectedIndex]?.path;
+        setSelectedPaths((prev) => toggle(prev.size > 0 || !focused ? prev : new Set([focused]), path));
+        anchorRef.current = idx;
+      } else if (!(mods?.contextMenu && selectedPaths.has(path))) {
+        setSelectedPaths((prev) => (prev.size > 0 ? new Set() : prev));
+        anchorRef.current = idx;
+      }
+      setSelectedIndex(idx);
+    },
+    [displayResults, selectedIndex, selectedPaths],
+  );
+  const isRowSelected = (path: string, idx: number) =>
+    selectedPaths.size > 0 ? selectedPaths.has(path) : idx === selectedIndex;
+
+  const transferSelected = useCallback(
+    async (mode: "copy" | "move") => {
+      const paths = [...selectedPaths];
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dest = await open({ directory: true, multiple: false });
+      if (typeof dest !== "string") return;
+      try {
+        const report = await invoke<TransferReport>(mode === "copy" ? "copy_files" : "move_files", {
+          paths,
+          dest,
+        });
+        flash(
+          report.failed.length === 0 && report.skipped === 0
+            ? t(mode === "copy" ? "toast.copied" : "toast.moved", { count: report.done.length })
+            : t("toast.transferPartial", {
+                done: report.done.length,
+                skipped: report.skipped,
+                failed: report.failed.length,
+              }),
+        );
+        if (mode === "move" && report.done.length > 0) {
+          const moved = new Set(report.done);
+          setResults((prev) => prev.filter((r) => !moved.has(r.path)));
+          setTotal((n) => Math.max(0, n - moved.size));
+          setSelectedPaths(new Set());
+        }
+      } catch (e) {
+        flash(String(e));
+      }
+    },
+    [selectedPaths, flash, t],
+  );
+
   /* Space previews only once the user has moved into the results with the
      arrow keys. Typing clears it, so Space still types a space in a query. */
   const navigatingRef = useRef(false);
@@ -891,12 +995,20 @@ function App() {
       // Tab walks the results only once the user is in the list. Taking every
       // Tab meant nothing in the interface was reachable without a mouse:
       // focus could not leave the result list for the toolbar, chips or sort.
+      // When navList is empty (empty search state), let Tab focus into pill buttons.
       if (e.key === "Tab") {
+        if (navList.length === 0) return;
         if (!inInput && !navigatingRef.current) return;
         if (inInput && e.shiftKey && !navigatingRef.current) return;
       }
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Tab") {
+        // When navList is empty, do not intercept Tab so focus can navigate suggestions/chips.
+        if (navList.length === 0) {
+          if (e.key === "Tab") return;
+          setSelectedIndex(0);
+          return;
+        }
         // Whether the list was already being walked matters for Tab: entering
         // from the search field lands on the first result instead of skipping
         // to the second. Capture before the flag flips below.
@@ -904,10 +1016,8 @@ function App() {
         e.preventDefault();
         navigatingRef.current = true;
         setNavActive(true);
-        if (navList.length === 0) {
-          setSelectedIndex(0);
-          return;
-        }
+        // Arrow keys go back to moving a single focus row.
+        setSelectedPaths((prev) => (prev.size > 0 ? new Set() : prev));
         // Tab walks the list linearly from the search field: the first press
         // lands on the first result, later presses step forward (Shift+Tab
         // back) with wrap. Grid geometry is deliberately ignored — Tab is
@@ -976,6 +1086,11 @@ function App() {
         if (resultsAreStale) return;
         e.preventDefault();
         handleCopyPath(navList[selectedIndex].path);
+      } else if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey) && (!inInput || navigatingRef.current) && hasQuery) {
+        // Select every loaded result; in the search box Ctrl+A stays "select text".
+        if (resultsAreStale) return;
+        e.preventDefault();
+        setSelectedPaths(new Set(displayResults.map((r) => r.path)));
       } else if (
         (e.key === "l" || e.key === "L") &&
         (e.metaKey || e.ctrlKey) &&
@@ -992,7 +1107,7 @@ function App() {
         setDetails(navList[selectedIndex]);
       }
     },
-    [isSetupComplete, showSettings, showDuplicates, showHelp, details, menu, query, results, selectedIndex, commandOutput, handleRunCommand, handleOpenFile, handleOpenFolder, openSettings, view, setResultView, gridColumnCount, slashItems, slashIndex, scopePrefix, scopeItems, scopeIndex, applyScope, preview],
+    [isSetupComplete, showSettings, showDuplicates, showHelp, details, menu, query, results, selectedIndex, commandOutput, handleRunCommand, handleOpenFile, handleOpenFolder, openSettings, view, setResultView, gridColumnCount, slashItems, slashIndex, scopePrefix, scopeItems, scopeIndex, applyScope, preview, displayResults, hasQuery],
   );
 
   // Window-level, so shortcuts keep working after a dialog closes and focus
@@ -1033,6 +1148,11 @@ function App() {
         setCommandOutput(null);
         return;
       }
+      if (selectedPaths.size > 0) {
+        e.preventDefault();
+        setSelectedPaths(new Set());
+        return;
+      }
       if (query.trim()) {
         e.preventDefault();
         setQuery("");
@@ -1047,7 +1167,7 @@ function App() {
     };
     window.addEventListener("keydown", onEsc);
     return () => window.removeEventListener("keydown", onEsc);
-  }, [isSetupComplete, showSettings, showDuplicates, showHelp, preview, details, saveOpen, slashFilter, scopePrefix, commandOutput, query, config?.app_mode]);
+  }, [isSetupComplete, showSettings, showDuplicates, showHelp, preview, details, saveOpen, slashFilter, scopePrefix, commandOutput, query, config?.app_mode, selectedPaths]);
 
   // Dismiss like a launcher: hide when the window loses focus (clicking away,
   // switching apps), unless a modal overlay is open. The setup wizard and
@@ -1111,51 +1231,71 @@ function App() {
       onContextMenu={(e) => e.preventDefault()}
     >
       {isSetupComplete === false && (
-        <SetupModal
-          onSetupCompleted={() => {
-            setIsSetupComplete(true);
-            window.setTimeout(() => inputRef.current?.focus(), 120);
-          }}
-        />
+        <Suspense fallback={null}>
+          <SetupModal
+            onSetupCompleted={() => {
+              setIsSetupComplete(true);
+              window.setTimeout(() => inputRef.current?.focus(), 120);
+            }}
+          />
+        </Suspense>
       )}
 
       {isSetupComplete === true && (
         <>
-          {showDuplicates && <DuplicatesModal onClose={() => setShowDuplicates(false)} />}
+          {showDuplicates && (
+            <Suspense fallback={null}>
+              <DuplicatesModal onClose={() => setShowDuplicates(false)} />
+            </Suspense>
+          )}
           {menu && (
             <ContextMenu
               x={menu.x}
               y={menu.y}
               onClose={() => setMenu(null)}
-              items={[
-                { label: t("contextMenu.open"), onSelect: () => handleOpenFile(menu.result.path) },
-                { label: t("contextMenu.preview"), onSelect: () => setPreview(menu.result) },
-                { label: t("contextMenu.reveal"), onSelect: () => handleOpenFolder(menu.result.path) },
-                { label: t("contextMenu.copyPath"), onSelect: () => handleCopyPath(menu.result.path) },
-                { label: t("contextMenu.details"), onSelect: () => setDetails(menu.result), separatorBefore: true },
-              ] as ContextMenuItem[]}
+              items={(selectedPaths.size > 1 && selectedPaths.has(menu.result.path)
+                ? [
+                    { label: t("contextMenu.copyTo", { count: selectedPaths.size }), onSelect: () => transferSelected("copy") },
+                    { label: t("contextMenu.moveTo", { count: selectedPaths.size }), onSelect: () => transferSelected("move") },
+                    { label: t("contextMenu.clearSelection"), onSelect: () => setSelectedPaths(new Set()), separatorBefore: true },
+                  ]
+                : [
+                    { label: t("contextMenu.open"), onSelect: () => handleOpenFile(menu.result.path) },
+                    { label: t("contextMenu.preview"), onSelect: () => setPreview(menu.result) },
+                    { label: t("contextMenu.reveal"), onSelect: () => handleOpenFolder(menu.result.path) },
+                    { label: t("contextMenu.copyPath"), onSelect: () => handleCopyPath(menu.result.path) },
+                    { label: t("contextMenu.details"), onSelect: () => setDetails(menu.result), separatorBefore: true },
+                  ]) as ContextMenuItem[]}
             />
           )}
           {details && <DetailsDialog result={details} onClose={() => setDetails(null)} />}
-          {showHelp && <HelpDialog onClose={() => setShowHelp(false)} />}
+          {showHelp && (
+            <Suspense fallback={null}>
+              <HelpDialog onClose={() => setShowHelp(false)} />
+            </Suspense>
+          )}
           {preview && (
-            <PreviewDialog
-              result={preview}
-              onOpen={() => handleOpenFile(preview.path)}
-              onClose={() => setPreview(null)}
-            />
+            <Suspense fallback={null}>
+              <PreviewDialog
+                result={preview}
+                onOpen={() => handleOpenFile(preview.path)}
+                onClose={() => setPreview(null)}
+              />
+            </Suspense>
           )}
 
           {/* Search bar */}
           {showSettings && (
             <div className="absolute inset-0 z-40">
-              <Settings
-                onClose={() => setShowSettings(false)}
-                initialSection={settingsSection}
-                onConfigSaved={() => {
-                  invoke<IndexingStatus>("get_indexing_status").then(setIndexingStatus);
-                }}
-              />
+              <Suspense fallback={null}>
+                <Settings
+                  onClose={() => setShowSettings(false)}
+                  initialSection={settingsSection}
+                  onConfigSaved={() => {
+                    invoke<IndexingStatus>("get_indexing_status").then(setIndexingStatus);
+                  }}
+                />
+              </Suspense>
             </div>
           )}
 
@@ -1345,9 +1485,9 @@ function App() {
                           <FileRow
                             item={{ path: res.path, filename: res.filename, file_size: res.file_size, modified: res.modified, is_dir: res.is_dir }}
                             query={query}
-                            selected={idx === selectedIndex}
+                            selected={isRowSelected(res.path, idx)}
                             showThumbs={showThumbs}
-                            onSelect={() => setSelectedIndex(idx)}
+                            onSelect={(mods) => pickRow(idx, mods)}
                             onOpen={() => handleOpenFile(res.path)}
                             onContextMenu={(x, y) => setMenu({ x, y, result: res })}
                           />
@@ -1356,9 +1496,9 @@ function App() {
                             result={res}
                             query={query}
                             index={idx}
-                            isSelected={idx === selectedIndex}
+                            isSelected={isRowSelected(res.path, idx)}
                             view="grid"
-                            onSelect={() => setSelectedIndex(idx)}
+                            onSelect={(mods) => pickRow(idx, mods)}
                             onOpen={() => handleOpenFile(res.path)}
                             onReveal={() => handleOpenFolder(res.path)}
                             onCopyPath={() => handleCopyPath(res.path)}
@@ -1397,10 +1537,13 @@ function App() {
                   ) : (
                     <HomeView
                       data={home}
+                      recentQueries={home?.recent_queries}
+                      onClearRecentQueries={handleClearRecentQueries}
                       onOpen={(path) => handleOpenFile(path)}
                       showThumbs={showThumbs}
                       focusIndex={hasQuery || !navActive ? null : selectedIndex}
                       onSearch={(q) => {
+                        recordQuery(q);
                         setQuery(q);
                         inputRef.current?.focus();
                       }}

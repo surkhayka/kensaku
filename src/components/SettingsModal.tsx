@@ -31,6 +31,7 @@ import {
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useLanguage } from "../hooks/useLanguage";
+import type { SupportedLanguage } from "../i18n";
 import { useStats } from "../hooks/useStats";
 import { Card, Field, Switch, Stepper, SectionHeader, reasonFrom } from "./settings/kit";
 import { WindowModePicker } from "./WindowModePicker";
@@ -417,7 +418,7 @@ function GeneralSection({
           <select
             value={language ?? ""}
             onChange={(e) => {
-              const value = e.target.value === "" ? null : (e.target.value as "en" | "zh");
+              const value = e.target.value === "" ? null : (e.target.value as SupportedLanguage);
               setLanguage(value);
               /* Match the ThemeSwatch handling: keep the settings snapshot in
                  step so a later Save does not write the old language back. */
@@ -1557,7 +1558,7 @@ function AboutSection({
   config: KensakuConfig | null;
   setConfig: React.Dispatch<React.SetStateAction<KensakuConfig | null>>;
 }) {
-  const { t } = useTranslation("settings");
+  const { t, i18n } = useTranslation("settings");
   const resetPending = useResetPending();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [version, setVersion] = useState<string>("…");
@@ -1753,7 +1754,7 @@ function AboutSection({
                       </span>
                       {updateInfo.published_at && (
                         <span className="text-[11px] text-subtle">
-                          {t("about.publishedOn", { date: formatReleaseDate(updateInfo.published_at) })}
+                          {t("about.publishedOn", { date: formatReleaseDate(updateInfo.published_at, i18n.language) })}
                         </span>
                       )}
                     </div>

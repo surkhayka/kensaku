@@ -15,6 +15,7 @@ pub mod ocr_indra;
 pub mod preview;
 pub mod query;
 pub mod search;
+pub mod tray_icon;
 pub mod updater;
 pub mod util;
 
@@ -376,7 +377,7 @@ pub fn run() {
     indexer::extract::set_ocr_enabled(config.ocr_enabled);
     indexer::extract::image::set_ocr_max_image_bytes(config.ocr_max_image_bytes);
     indexer::extract::set_ocr_languages(config.ocr_languages.clone());
-    indexer::extract::set_content_caps(config.content_max_file_size_mb, config.content_max_text_bytes);
+    indexer::extract::set_content_caps(config.content_max_file_size_mb, config.content_max_text_bytes, config.content_csv_head_rows);
     crate::embed::set_max_semantic_units(config.content_max_semantic_units);
     ocr::set_engine(&config.ocr_engine);
 
@@ -483,6 +484,8 @@ pub fn run() {
             commands::set_theme,
             commands::open_file,
             commands::open_folder,
+            commands::copy_files,
+            commands::move_files,
             commands::get_file_preview,
             commands::get_snippets,
             commands::get_thumbnail,
@@ -516,7 +519,10 @@ pub fn run() {
             commands::toggle_pin,
             commands::hide_window,
             commands::remember_query,
+            commands::record_recent_query,
             commands::last_query,
+            commands::get_recent_queries,
+            commands::clear_recent_queries,
             commands::run_doctor,
             commands::reset_all,
             commands::rebuild_index,
@@ -586,7 +592,7 @@ pub fn run() {
             // Windows users expect a click on the tray icon to offer the
             // menu (Open / Quit), and a double-click to open. Elsewhere a
             // left click toggles the window and the menu is a right click.
-            let mut tray_builder = TrayIconBuilder::new()
+            let mut tray_builder = TrayIconBuilder::with_id("main")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(cfg!(windows))
                 .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -611,6 +617,19 @@ pub fn run() {
                     _ => {}
                 });
 
+            // On Windows, pick the initial tray icon that matches the app theme so
+            // the icon is visible on both light and dark taskbars.  Other platforms
+            // keep the default window icon (Tauri picks the best size automatically).
+            #[cfg(windows)]
+            {
+                let icon_bytes = tray_icon::tray_icon_bytes(&config.theme);
+                if let Some(icon) =
+                    tray_icon::decode_png(icon_bytes).or_else(|| app.default_window_icon().cloned())
+                {
+                    tray_builder = tray_builder.icon(icon);
+                }
+            }
+            #[cfg(not(windows))]
             if let Some(icon) = app.default_window_icon() {
                 tray_builder = tray_builder.icon(icon.clone());
             }

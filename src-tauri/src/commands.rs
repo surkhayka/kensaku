@@ -187,41 +187,49 @@ pub async fn search(
         return Ok(resp);
     }
 
-    let indexer = &state.indexer;
-    indexer.query_in_flight.store(true, Ordering::SeqCst);
+    // The query holds several index read locks and does CPU-bound work; run it
+    // on the blocking pool so it cannot stall the async runtime that serves IPC.
+    let indexer = std::sync::Arc::clone(&state.indexer);
+    let offset = offset.unwrap_or(0);
+    let resp = tauri::async_runtime::spawn_blocking(move || {
+        indexer.query_in_flight.store(true, Ordering::SeqCst);
 
-    let metadata = indexer.metadata.read();
-    let content_index = indexer.content_index.read();
-    let unit_store = indexer.unit_store.read();
-    let cfg = indexer.config.read();
-    let max_results = cfg.max_results;
-    let semantic_enabled = cfg.semantic_enabled;
-    let aliases = cfg.alias_pairs();
+        let metadata = indexer.metadata.read();
+        let content_index = indexer.content_index.read();
+        let unit_store = indexer.unit_store.read();
+        let cfg = indexer.config.read();
+        let max_results = cfg.max_results;
+        let semantic_enabled = cfg.semantic_enabled;
+        let aliases = cfg.alias_pairs();
 
-    // The UI asks for snippets separately (`get_snippets`) so the search
-    // itself never touches file contents.
-    let sort = sort
-        .as_deref()
-        .map(crate::search::SortOrder::parse)
-        .unwrap_or_default();
-    let visual_store = indexer.visual_store.read();
-    let resp = SearchDispatcher::search_response_fast_sorted_with_snippets_and_visual(
-        &query,
-        &metadata,
-        &content_index,
-        Some(&unit_store),
-        Some(&visual_store),
-        semantic_enabled,
-        max_results,
-        req_seq,
-        sort,
-        &aliases,
-        offset.unwrap_or(0),
-        false,
-    );
+        // The UI asks for snippets separately (`get_snippets`) so the search
+        // itself never touches file contents.
+        let sort = sort
+            .as_deref()
+            .map(crate::search::SortOrder::parse)
+            .unwrap_or_default();
+        let visual_store = indexer.visual_store.read();
+        let resp = SearchDispatcher::search_response_fast_sorted_with_snippets_and_visual(
+            &query,
+            &metadata,
+            &content_index,
+            Some(&unit_store),
+            Some(&visual_store),
+            semantic_enabled,
+            max_results,
+            req_seq,
+            sort,
+            &aliases,
+            offset,
+            false,
+        );
 
-    indexer.query_in_flight.store(false, Ordering::SeqCst);
-    record_query_latency(started.elapsed().as_micros() as u64);
+        indexer.query_in_flight.store(false, Ordering::SeqCst);
+        record_query_latency(started.elapsed().as_micros() as u64);
+        resp
+    })
+    .await
+    .map_err(|e| format!("search task failed: {e}"))?;
     Ok(resp)
 }
 
@@ -463,11 +471,19 @@ pub async fn get_stats(state: State<'_, AppState>) -> Result<serde_json::Value, 
     if let Some(daemon) = state.daemon.as_ref() {
         return daemon.get_stats();
     }
-    stats_for(&state.indexer)
+    // Walks the index directory and queries SQLite; keep it off the async runtime.
+    let indexer = std::sync::Arc::clone(&state.indexer);
+    tauri::async_runtime::spawn_blocking(move || stats_for(&indexer))
+        .await
+        .map_err(|e| format!("stats task failed: {e}"))?
 }
 
 #[tauri::command]
-pub async fn set_theme(theme: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn set_theme(
+    app: AppHandle,
+    theme: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let lowered = theme.trim().to_ascii_lowercase();
     // "paper" / "void" are the pre-1.1 names for the same two themes.
     let normalized = match lowered.as_str() {
@@ -477,15 +493,42 @@ pub async fn set_theme(theme: String, state: State<'_, AppState>) -> Result<(), 
             return Err(format!(
                 "Unsupported theme '{}'. Expected 'light' or 'dark'.",
                 theme
-            ))
+            ));
         }
     }
     .to_string();
 
     let mut config = state.indexer.config.read().clone();
-    config.theme = normalized;
+    config.theme = normalized.clone();
     config.save()?;
     *state.indexer.config.write() = config;
+
+    // On Windows, swap the tray icon to match the new theme so it remains
+    // visible on both light and dark taskbars.  A tray failure is logged but
+    // never returned as an error: a failed icon swap must never block saving
+    // the theme.
+    #[cfg(windows)]
+    {
+        if let Some(tray) = app.tray_by_id("main") {
+            let icon_bytes = crate::tray_icon::tray_icon_bytes(&normalized);
+            match crate::tray_icon::decode_png(icon_bytes)
+                .or_else(|| app.default_window_icon().cloned())
+            {
+                Some(icon) => {
+                    if let Err(e) = tray.set_icon(Some(icon)) {
+                        eprintln!("[Kensaku] tray icon update failed: {e}");
+                    }
+                }
+                None => {
+                    eprintln!("[Kensaku] tray icon: could not decode PNG for theme '{normalized}'")
+                }
+            }
+        }
+    }
+    // Suppress unused-variable warning on non-Windows targets.
+    #[cfg(not(windows))]
+    let _ = app;
+
     Ok(())
 }
 
@@ -505,6 +548,94 @@ pub async fn open_folder(path: String) -> Result<(), String> {
     };
 
     open::that(target_dir).map_err(|e| format!("Failed to open folder: {}", e))
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct TransferReport {
+    /// Source paths that were transferred, so the UI can drop them from its list.
+    pub done: Vec<String>,
+    pub skipped: u32,
+    pub failed: Vec<TransferFailure>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransferFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// `dir/name`, or the first free `dir/name (1).ext`, `(2)`, ... so a transfer
+/// never replaces a file that is already there.
+fn free_name(dir: &Path, file: &Path) -> PathBuf {
+    let name = file.file_name().unwrap_or_default();
+    let direct = dir.join(name);
+    if !direct.exists() {
+        return direct;
+    }
+    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = file.extension().map(|ext| ext.to_string_lossy());
+    (1u32..)
+        .map(|n| match &ext {
+            Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
+            None => dir.join(format!("{stem} ({n})")),
+        })
+        .find(|candidate| !candidate.exists())
+        .expect("an unbounded counter always finds a free name")
+}
+
+/// Rename, or copy then delete when the target is on another volume.
+fn move_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    if std::fs::rename(source, target).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(source, target)?;
+    std::fs::remove_file(source)
+}
+
+/// Copies or moves files into `dest`. Directories and missing paths are
+/// skipped (shortcut: files only; add recursive copy if folders are needed).
+/// One failure never stops the rest. Existing files are never overwritten.
+fn transfer(paths: &[String], dest: &Path, remove_source: bool) -> Result<TransferReport, String> {
+    if !dest.is_dir() {
+        return Err(format!("Destination is not a folder: {}", dest.display()));
+    }
+    let mut report = TransferReport::default();
+    for path in paths {
+        let source = Path::new(path);
+        // Moving a file into the folder it is already in would be a no-op.
+        if !source.is_file() || (remove_source && source.parent() == Some(dest)) {
+            report.skipped += 1;
+            continue;
+        }
+        let target = free_name(dest, source);
+        let outcome = if remove_source {
+            move_file(source, &target)
+        } else {
+            std::fs::copy(source, &target).map(|_| ())
+        };
+        match outcome {
+            Ok(()) => report.done.push(path.clone()),
+            Err(e) => report.failed.push(TransferFailure {
+                path: path.clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn copy_files(paths: Vec<String>, dest: String) -> Result<TransferReport, String> {
+    tauri::async_runtime::spawn_blocking(move || transfer(&paths, Path::new(&dest), false))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn move_files(paths: Vec<String>, dest: String) -> Result<TransferReport, String> {
+    tauri::async_runtime::spawn_blocking(move || transfer(&paths, Path::new(&dest), true))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1038,7 +1169,7 @@ pub async fn complete_setup(
     crate::indexer::extract::set_ocr_enabled(config.ocr_enabled);
     crate::indexer::extract::image::set_ocr_max_image_bytes(config.ocr_max_image_bytes);
     crate::indexer::extract::set_ocr_languages(config.ocr_languages.clone());
-    crate::indexer::extract::set_content_caps(config.content_max_file_size_mb, config.content_max_text_bytes);
+    crate::indexer::extract::set_content_caps(config.content_max_file_size_mb, config.content_max_text_bytes, config.content_csv_head_rows);
     crate::embed::set_max_semantic_units(config.content_max_semantic_units);
     crate::ocr::set_engine(&config.ocr_engine);
     crate::indexer::extract::set_external_extractors(config.extractors.clone());
@@ -1082,6 +1213,8 @@ pub struct HomeData {
     pub recent: Vec<HomeItem>,
     pub pins: Vec<HomeItem>,
     pub saved_searches: Vec<crate::config::SavedSearch>,
+    #[serde(default)]
+    pub recent_queries: Vec<String>,
 }
 
 pub fn home_data_for(indexer: &crate::indexer::IndexerManager) -> Result<HomeData, String> {
@@ -1158,6 +1291,7 @@ pub fn home_data_for(indexer: &crate::indexer::IndexerManager) -> Result<HomeDat
         recent,
         pins,
         saved_searches: config.saved_searches,
+        recent_queries: crate::main_window::recent_queries(),
     })
 }
 
@@ -1321,6 +1455,21 @@ pub fn remember_query(query: String) {
 #[tauri::command]
 pub fn last_query() -> String {
     crate::main_window::last_query()
+}
+
+#[tauri::command]
+pub fn record_recent_query(query: String) {
+    crate::main_window::record_recent_query(&query);
+}
+
+#[tauri::command]
+pub fn get_recent_queries() -> Vec<String> {
+    crate::main_window::recent_queries()
+}
+
+#[tauri::command]
+pub fn clear_recent_queries() {
+    crate::main_window::clear_recent_queries();
 }
 
 /// Wipes all Kensaku state on the next launch.
@@ -1613,6 +1762,63 @@ mod tests {
             assert!(entries.contains(&expected), "missing scope {expected}");
         }
     }
+    fn temp_dir_with(files: &[(&str, &str)]) -> PathBuf {
+        let dir = temp_path("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in files {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        dir
+    }
+
+    fn strings(paths: &[PathBuf]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn copy_keeps_the_source_and_never_overwrites() {
+        let src = temp_dir_with(&[("a.txt", "new"), ("b", "bee")]);
+        let dest = temp_dir_with(&[("a.txt", "old")]);
+        let report = transfer(&strings(&[src.join("a.txt"), src.join("b")]), &dest, false).unwrap();
+        assert_eq!((report.done.len(), report.skipped, report.failed.len()), (2, 0, 0));
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(dest.join("a (1).txt")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(dest.join("b")).unwrap(), "bee");
+        assert!(src.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn move_removes_the_source_and_skips_folders_and_missing_paths() {
+        let src = temp_dir_with(&[("a.txt", "x")]);
+        let dest = temp_dir_with(&[]);
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        let paths = strings(&[src.join("a.txt"), src.join("sub"), src.join("gone.txt")]);
+        let report = transfer(&paths, &dest, true).unwrap();
+        assert_eq!((report.done.len(), report.skipped), (1, 2));
+        assert_eq!(report.done, strings(&[src.join("a.txt")]));
+        assert!(!src.join("a.txt").exists());
+        assert!(dest.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn move_into_the_same_folder_is_a_no_op() {
+        let dir = temp_dir_with(&[("a.txt", "x")]);
+        let report = transfer(&strings(&[dir.join("a.txt")]), &dir, true).unwrap();
+        assert_eq!((report.done.len(), report.skipped), (0, 1));
+        assert!(dir.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transfer_rejects_a_missing_destination() {
+        let missing = temp_path("nope");
+        assert!(transfer(&[], &missing, false).is_err());
+    }
+
 }
 
 /* ---------------------------------------------------------------- */
@@ -1732,4 +1938,5 @@ pub async fn get_updater_status() -> Result<crate::updater::UpdateStatus, String
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
     crate::updater::install_and_restart(&app)
+
 }

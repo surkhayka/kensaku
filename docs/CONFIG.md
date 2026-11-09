@@ -48,11 +48,12 @@ index, OCR state, everything else under the data directory):
 | `content_depth` | string | `balanced` | `quick`, `balanced`, or `deep` for large documents. |
 | `content_max_file_size_mb` | number | `100` | Largest file that gets text extraction; above this it is name/metadata-only. |
 | `content_max_text_bytes` | number | `4000000` | Maximum extracted text per document (~4 MB). |
+| `content_csv_head_rows` | number | `200` | Data rows indexed per CSV/TSV/Parquet file after the header; larger files are sampled like `head`. Rows past it are not searchable by value. |
 | `content_max_semantic_units` | number | `48` | Maximum embedding chunks per document. |
 | `agent_scoped_roots` | string[] | `[]` | MCP/CLI read-only scope roots. Empty means the whole index. |
 | `include_ignored` | bool | `false` | Include files matched by `.gitignore` / `.cursorignore`. |
 | `theme` | string | `dark` | `light` or `dark`. Fresh installs follow the OS theme before falling back to dark. |
-| `language` | string\|null | `null` | UI language code (`en`, `zh`); `null` auto-detects the system. |
+| `language` | string\|null | `null` | UI language code (`en`, `zh`, `ru`); `null` auto-detects the system. |
 | `aliases` | object[] | `resume → cv, curriculum vitae`; `invoice → receipt, bill`; `screenshot → screen shot, capture`; plus receipt, contract, photo | Personal vocabulary for plain-language queries. |
 | `saved_searches` | object[] | `[]` | Saved queries shown on the home screen. |
 | `pins` | string[] | `[]` | Pinned file paths shown on the home screen. |

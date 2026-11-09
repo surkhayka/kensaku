@@ -22,12 +22,12 @@ tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tantivy = "0.26"
+tantivy = "0.27"
 nucleo-matcher = "0.3"
 jwalk = "0.9"
 notify = "8"
 fs4 = "1.1"
-dirs = "6"
+dirs = "7"
 log = "0.4"
 auto-launch = "0.6"
 parking_lot = "0.12"
@@ -37,7 +37,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 regex = "1"
 sha2 = "0.11"
 rayon = "1.10"
-lopdf = "0.46.0"
+lopdf = "0.47.0"
 quick-xml = "0.42.0"
 zip = "9.1.0"
 ureq = { version = "2", features = ["tls", "json"] }
@@ -51,12 +51,13 @@ paddleocr_rs_onnx = { version = "0.2.8", default-features = false, optional = tr
 # available.
 ort = { version = "2.0.0-rc.15", optional = true, features = ["load-dynamic"] }
 interprocess = "2.4.7"
-base64 = "0.22"
+base64 = "0.23"
 tree-sitter = "0.27"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
+parquet = { version = "60.1.0", default-features = false, features = ["snap", "flate2-rust_backend", "zstd", "lz4"] }
 
 [dev-dependencies]
 # Builds Flate-compressed image streams for the scanned-PDF decoder tests.
