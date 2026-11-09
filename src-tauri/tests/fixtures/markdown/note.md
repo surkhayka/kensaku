@@ -9,6 +9,7 @@ aliases:
 
 [Project page](https://example.com/project)
 ![Diagram label](images/diagram.png)
+![](images/empty-alt-destination.png)
 
 ```rust
 let answer = 42;

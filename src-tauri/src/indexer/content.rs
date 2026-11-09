@@ -1321,8 +1321,7 @@ fn delimited_row_snippet<'a>(mut rows: impl Iterator<Item = &'a str>, query: &st
 /// cache. See [`ContentIndex::get_snippet_fast`].
 pub fn snippet_for_path(path: &Path, query: &str) -> Option<String> {
     if crate::indexer::extract::markdown::is_markdown(path) {
-        let text =
-            crate::indexer::extract::markdown::extract_markdown(path, SNIPPET_READ_LIMIT as usize)?;
+        let text = crate::indexer::extract::text::extract_text(path, SNIPPET_READ_LIMIT as usize)?;
         return ContentIndex::extract_snippet_from_text(&text, query);
     }
     if is_delimited_extension(path.extension().and_then(|ext| ext.to_str())) {
@@ -2096,10 +2095,9 @@ mod tests {
     fn markdown_content_search_uses_cleaned_text() {
         let temp = temp_index("markdown");
         let index = temp.index.as_ref().unwrap();
-        let text = crate::indexer::extract::markdown::clean_text(
-            include_str!("../../tests/fixtures/markdown/note.md"),
-            10000,
-        );
+        let text = crate::indexer::extract::markdown::strip(include_str!(
+            "../../tests/fixtures/markdown/note.md"
+        ));
         add(index, "/synthetic/note.md", "note.md", &text);
         index.commit().unwrap();
         for query in ["Searchable", "Alternate", "answer", "Project", "Diagram"] {
@@ -2122,8 +2120,8 @@ mod tests {
         ));
         let source = include_bytes!("../../tests/fixtures/markdown/note.md");
         fs::write(&path, source).unwrap();
-        let text = crate::indexer::extract::markdown::extract_markdown(&path, 64 * 1024)
-            .expect("Markdown text");
+        let text =
+            crate::indexer::extract::text::extract_text(&path, 64 * 1024).expect("Markdown text");
         for query in ["Searchable", "Project", "answer", "Diagram"] {
             let snippet = snippet_for_path(&path, query).expect("Markdown snippet");
             assert_eq!(

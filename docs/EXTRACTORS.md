@@ -1,21 +1,22 @@
 # External extractors
 
-## Built-in Markdown extraction
+## Markdown search cleanup
 
-`.md` and `.markdown` files use a built-in, dependency-free text extractor.
-It retains frontmatter (including titles, tags and aliases), keeps code while
-removing fenced-code delimiters, and keeps link labels and image alt text while
-omitting destinations. Inline and reference links are supported. Fenced and
-indented code remain literal. Search snippets and text previews use the same
-cleanup as indexing.
+`.md` and `.markdown` stay on the plain-text extraction path. A small shared
+stripper removes top-level backtick/tilde fence markers and common single-line
+inline link/image destinations, retaining labels, alt text and fenced code.
+Frontmatter remains searchable as ordinary text; it is not parsed or removed.
+Snippets and Quick Look use the same cleanup, and both extensions appear in
+Docs filters.
 
-This is best-effort cleanup, not a complete CommonMark renderer or YAML parser:
-frontmatter keys and values are retained as text, and malformed or unresolved
-links are preserved. Large files retain the text extractor's bounded head/tail
-sampling; each sample is parsed independently so unfinished head syntax cannot
-consume the tail. Sampled tails lack preceding Markdown context. Fast snippets
-read the first 64 KiB and cannot resolve reference definitions beyond that window. Existing indexed files
-need a rebuild to pick up the new extraction without a change on disk.
+This is deliberately limited cleanup, not a Markdown renderer. Reference links,
+nested destinations, multiline links and quote/list-contained fences are not
+interpreted. Lines with inline backticks or escapes are kept verbatim to avoid
+altering code or escaped text. Other unsupported syntax may remain in results.
+The existing decoder and head/tail sampling policy are reused; sampled pieces
+are cleaned independently, without reconstructing missing context. Fast snippets
+still read only the first 64 KiB. Existing indexed notes need a rebuild or a
+file change to refresh their text.
 
 ## External plugins
 
