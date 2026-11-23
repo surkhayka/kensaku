@@ -67,8 +67,11 @@ bun frozen-lockfile step).
 - Reviewed #210, #198, #194 with concrete blockers (all still open, waiting on
   their authors).
 - Replied to every open issue with a diagnosis or next step.
-- Closed **#208** (fixed by #222), **#197** (fixed by #225), **#174** (fix
-  shipped in 1.0.18), **#71** (decision: no OXR integration).
+- Closed **#208** (fixed by #222), **#197** (fixed by #225), **#71**
+  (decision: no OXR integration).
+- **Reopened #174**: the reporter's pack hashes match the pinned files exactly
+  and the detector still returns zero lines on Nobara/Fedora 44. The 1.0.18
+  fixes covered stale/truncated packs, not this case.
 - Added status notes to **#206** and **#207** describing what is fixed and
   what remains.
 - Deleted the three stale Dependabot branches and the local `rusqlite-bump`
@@ -81,13 +84,14 @@ bun frozen-lockfile step).
 - `v1.0.18` is still the only/latest release. **No version was bumped and no
   tag was created.**
 - Open PRs: **#210, #198, #194** (cross-repo, changes requested).
-- Open issues: **#209, #207, #206, #205, #163, #138, #73, #67**.
+- Open issues: **#209, #207, #206, #205, #174, #163, #138, #73, #67**.
 
 ## Still open, and why
 
 | Item | Status | Why it is not merged |
 |---|---|---|
 | #206 backend | Open | Paused embed-worker restart and semantic delete-after-insert need a large-corpus run; the visible stats latch is fixed in #221 |
+| #174 Indra on Fedora | Open | Pack hashes match; the detector returns 0 boxes. Needs the `[Kensaku OCR]` logs and the loaded ORT path. Settings also has no "Re-download" action |
 | #207 streaming walk / startup | Open | Refactor of the indexing hot path; needs a 400k-file Windows corpus and cancellation/ordering tests. Volume-root pruning is merged in #230 |
 | #210 setup dedupe | Open | Windows test, UNC handling, offline-folder behavior, and i18n fixes requested from the author |
 | #198 macOS daemon | Open | Needs a health check before the macOS early return, a non-tautological test, and doc updates |
