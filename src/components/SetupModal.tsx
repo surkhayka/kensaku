@@ -8,6 +8,7 @@ import { Check, Plus, ArrowRight, ArrowLeft, LoaderCircle, Sun, Moon, Download, 
 import { useTheme } from "../hooks/useTheme";
 import { WindowModePicker } from "./WindowModePicker";
 import type { IndexingStatus, KensakuConfig, OcrEngine, OcrStatus, ModelsStatus } from "../types";
+import { appendUniqueDirectories, validateDirectories } from "../lib/setupDirectories";
 
 /* First run: three screens, one decision each.
    1 Welcome → 2 Pick folders → 3 Exclusions + start. */
@@ -111,8 +112,12 @@ export function SetupModal({ onSetupCompleted }: { onSetupCompleted: () => void 
 
   useEffect(() => {
     invoke<string[]>("get_suggested_directories")
-      .then((dirs) => {
-        setSuggestedDirs(dirs);
+      .then(async (dirs) => {
+        const { directories } = await validateDirectories(
+          dirs,
+          (path) => invoke<string>("validate_directory", { path }),
+        );
+        setSuggestedDirs(directories);
         // Suggested folders are shown for convenience, but nothing is selected
         // by default: the user must explicitly choose what to index.
       })
@@ -276,7 +281,18 @@ export function SetupModal({ onSetupCompleted }: { onSetupCompleted: () => void 
   }, [scanning, done, onSetupCompleted]);
 
   const addDirs = (paths: string[]) =>
-    setSelectedDirs((prev) => [...prev, ...paths.filter((p) => !prev.includes(p))]);
+    setSelectedDirs((prev) => appendUniqueDirectories(prev, paths));
+
+  const translateDirectoryError = (error: unknown, path: string) => {
+    const message = String(error);
+    if (/^Folder not found:/i.test(message)) {
+      return t("folders.folderNotFound", { path });
+    }
+    if (/^Not a folder:/i.test(message)) {
+      return t("folders.notDirectory", { path });
+    }
+    return t("folders.validationFailed", { path });
+  };
 
   const toggleNameOnly = (dir: string) =>
     setNameOnlyDirs((prev) =>
@@ -292,17 +308,34 @@ export function SetupModal({ onSetupCompleted }: { onSetupCompleted: () => void 
      dev preview (mockTauri) only pays for it when the picker is used. */
   const browseForFolder = async () => {
     setDirError(null);
+    let picked: string | string[] | null;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const picked = await open({
+      picked = await open({
         directory: true,
         multiple: true,
         title: t("folders.browseTitle"),
       });
-      if (!picked) return;
-      addDirs(Array.isArray(picked) ? picked : [picked]);
     } catch (err) {
       setDirError(t("folders.pickerUnavailable", { error: String(err) }));
+      return;
+    }
+    if (!picked) return;
+    try {
+      const { directories, errors } = await validateDirectories(
+        Array.isArray(picked) ? picked : [picked],
+        (path) => invoke<string>("validate_directory", { path }),
+      );
+      addDirs(directories);
+      if (errors.length) {
+        setDirError(
+          errors
+            .map(({ path, error }) => translateDirectoryError(error, path))
+            .join("  ·  "),
+        );
+      }
+    } catch (err) {
+      setDirError(translateDirectoryError(err, ""));
     }
   };
 
@@ -314,19 +347,25 @@ export function SetupModal({ onSetupCompleted }: { onSetupCompleted: () => void 
     if (!raw || dirBusy) return;
     setDirBusy(true);
     setDirError(null);
-    const ok: string[] = [];
-    const failed: string[] = [];
-    for (const part of raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)) {
-      try {
-        ok.push(await invoke<string>("validate_directory", { path: part }));
-      } catch (err) {
-        failed.push(String(err));
+    try {
+      const { directories, errors } = await validateDirectories(
+        raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean),
+        (path) => invoke<string>("validate_directory", { path }),
+      );
+      if (directories.length) addDirs(directories);
+      setCustomDirInput("");
+      if (errors.length) {
+        setDirError(
+          errors
+            .map(({ path, error }) => translateDirectoryError(error, path))
+            .join("  ·  "),
+        );
       }
+    } catch (err) {
+      setDirError(translateDirectoryError(err, ""));
+    } finally {
+      setDirBusy(false);
     }
-    if (ok.length) addDirs(ok);
-    setCustomDirInput("");
-    if (failed.length) setDirError(failed.join("  ·  "));
-    setDirBusy(false);
   };
 
   const handleFinish = async () => {
@@ -557,7 +596,7 @@ export function SetupModal({ onSetupCompleted }: { onSetupCompleted: () => void 
             <p className="t-lead text-muted">{t("folders.lead")}</p>
           </div>
           <div className="flex flex-col gap-2">
-            {[...suggestedDirs, ...selectedDirs.filter((d) => !suggestedDirs.includes(d))].map((dir, i) => {
+            {appendUniqueDirectories(suggestedDirs, selectedDirs).map((dir, i) => {
               const selected = selectedDirs.includes(dir);
               const name = dir.split(/[\\/]/).filter(Boolean).pop() || dir;
               return (

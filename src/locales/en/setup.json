@@ -55,7 +55,10 @@
     "nameOnlyHint": "Index only file names and paths for this folder: no text extraction, OCR or semantic search. Off means names and contents. A nested folder with this off overrides a names-only parent.",
     "pathPlaceholder": "Or type a path — ~ works, commas separate several",
     "addFolder": "Add folder",
-    "pickerUnavailable": "Folder picker unavailable here — type a path below instead. ({{error}})"
+    "pickerUnavailable": "Folder picker unavailable here — type a path below instead. ({{error}})",
+    "folderNotFound": "Folder not found: {{path}}",
+    "notDirectory": "Not a folder: {{path}}",
+    "validationFailed": "Could not validate folder: {{path}}"
   },
   "ocr": {
     "title": "Read the text in your images",
