@@ -40,6 +40,7 @@ import { StatsForNerds } from "./settings/stats";
 import { DoctorSection } from "./settings/doctor";
 import { ModelFilesCard } from "./settings/models";
 import { formatBytes, formatComma } from "../lib/format";
+import { whatsNewItems } from "../lib/whatsNew";
 import { openGitHubBugReport } from "../lib/githubIssue";
 import {
   checkForUpdates,
@@ -1598,6 +1599,7 @@ function AboutSection({
   const resetPending = useResetPending();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [version, setVersion] = useState<string>("…");
+  const whatsNew = whatsNewItems(version);
   const [checking, setChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(() =>
     getCachedUpdateInfo(),
@@ -1729,6 +1731,19 @@ function AboutSection({
             checked={config?.auto_update ?? true}
             onChange={(v) =>
               setConfig((c) => (c ? { ...c, auto_update: v } : c))
+            }
+          />
+        </Field>
+
+        <Field
+          label={t("about.autoInstallSetting")}
+          description={t("about.autoInstallSettingDesc")}
+        >
+          <Switch
+            checked={config?.auto_install_updates ?? true}
+            disabled={config?.auto_update === false}
+            onChange={(v) =>
+              setConfig((c) => (c ? { ...c, auto_install_updates: v } : c))
             }
           />
         </Field>
@@ -1893,6 +1908,16 @@ function AboutSection({
               </>
             )}
           </div>
+        </Card>
+      )}
+
+      {whatsNew.length > 0 && (
+        <Card title={t("about.whatsNew", { version })}>
+          <ul className="list-disc space-y-1.5 p-4 pl-8 text-[12px] leading-[18px] text-muted">
+            {whatsNew.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
         </Card>
       )}
 

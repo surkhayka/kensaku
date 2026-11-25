@@ -3,7 +3,31 @@
 All notable changes to Kensaku. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
-## [1.0.20] — 2026-11-24
+## [1.0.20] — 2026-11-25
+
+### Added
+- **Automatic updates are on by default.** Signed releases download and install
+  on their own, then Kensaku restarts to finish. The "Install updates
+  automatically" switch can be turned off on the last setup step or later in
+  Settings → About; updates install when the app is idle. MSI, portable and
+  `.deb`/`.rpm` copies still update through their package.
+- **An update never restarts a window you are working in.** The automatic
+  install waits until the window is hidden or another application has focus.
+  While you are looking at Kensaku, the status bar offers "Restart to update"
+  instead.
+- **Live update indicator in the status bar.** It shows the download percentage
+  and progress, the restart countdown, and a waiting-for-indexing state.
+- **A failed install stops instead of looping.** If the app comes back on the
+  old version after an attempt, the next launch disables the automatic path for
+  that session and shows "Update failed" rather than downloading and restarting
+  again.
+- **What's new in Settings → About.** The release notes for the running version,
+  bundled with the app, so an automatic restart has an explanation.
+
+### Changed
+- **A crawl that starts during an update now defers the install until indexing
+  finishes** instead of cancelling it. The app retries while the index is busy
+  and installs as soon as it is idle.
 
 ### Fixed
 - **PP-OCR sessions no longer pin ONNX Runtime's CPU arena.** The arena only

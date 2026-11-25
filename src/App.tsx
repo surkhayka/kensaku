@@ -38,7 +38,8 @@ import { useMeasuredHeight } from "./lib/useMeasuredHeight";
 import { interpretationLabel } from "./lib/interpretation";
 import { inFilter } from "./lib/query";
 import { isNewerVersion } from "./lib/version";
-import { checkForUpdates } from "./lib/updater";
+import { checkForUpdates, autoInstallUpdate, installReadyUpdate, setPresenceProvider, subscribeUpdateActivity, type UpdateActivity } from "./lib/updater";
+import { classifyBoot, clearAttempt, readAttempt } from "./lib/updateGuard";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Settings as SettingsIcon,
@@ -65,6 +66,10 @@ const PreviewDialog = lazy(() => import("./components/PreviewDialog").then((m) =
 
 const SNIPPET_LRU_LIMIT = 200;
 
+/* Opt-in automatic installs get one attempt per app run. A failed download
+   or install leaves the manual controls in Settings intact. */
+let autoInstallAttempted = false;
+
 /** Small insertion-order LRU for snippets: recent hits move to the end. */
 function putSnippet(
   cache: Map<string, string | null>,
@@ -84,6 +89,7 @@ function App() {
   const { t } = useTranslation("search");
   const { t: tc } = useTranslation("common");
   const { t: te } = useTranslation("errors");
+  const { t: ts } = useTranslation("settings");
   /* Apply the persisted/auto language once at the root. Settings has its own
      picker; this keeps startup and every later window in the same language. */
   useLanguage();
@@ -122,6 +128,8 @@ function App() {
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatus | null>(null);
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  const [updateActivity, setUpdateActivity] = useState<UpdateActivity | null>(null);
+  const [updateBlocked, setUpdateBlocked] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [showDuplicates, setShowDuplicates] = useState(false);
@@ -702,11 +710,61 @@ function App() {
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
-  const flash = useCallback((msg: string) => {
+  const flash = useCallback((msg: string, duration = 1600) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1600);
+    toastTimer.current = window.setTimeout(() => setToast(null), duration);
   }, []);
+
+  /* The updater owns the update lifecycle; the status bar only renders it. */
+  useEffect(() => subscribeUpdateActivity(setUpdateActivity), []);
+
+  /* Automatic installs wait for the window to be hidden or unfocused, so the
+     updater needs to know whether anyone is looking at this webview. Launcher
+     mode hides the window; app mode can be visible but behind another app. */
+  useEffect(() => {
+    setPresenceProvider(() => document.visibilityState === "visible" && document.hasFocus());
+    return () => setPresenceProvider(null);
+  }, []);
+
+  /* An install attempt that came back on a different version did not take.
+     Disable the automatic path for this session instead of re-downloading and
+     restarting in a loop, and surface it in the status bar. */
+  useEffect(() => {
+    getVersion()
+      .then((current) => {
+        const outcome = classifyBoot(readAttempt(localStorage), current);
+        if (outcome === "failed") {
+          setUpdateBlocked(true);
+          return;
+        }
+        if (outcome === "landed" || outcome === "stale") clearAttempt(localStorage);
+      })
+      .catch(() => {});
+  }, []);
+
+  /* Automatic installs. Run once per app run, independently of the
+     12-hour tag cache above, because installing needs the live Update object.
+     Skip while a crawl is active (the retry loop inside the updater waits for
+     it), during first-run setup, and after a failed attempt. */
+  useEffect(() => {
+    if (updateBlocked) return;
+    if (autoInstallAttempted) return;
+    if (isSetupComplete !== true) return;
+    if (!config || config.auto_update !== true || config.auto_install_updates !== true) return;
+    // Wait for the first status read: installing while the indexer starts
+    // would restart the app mid-crawl.
+    if (indexingStatus === null) return;
+    autoInstallAttempted = true;
+    if (indexingStatus.is_indexing) return;
+    autoInstallUpdate(
+      () => flash(ts("about.autoInstallRestarting"), 5500),
+      () => flash(ts("about.autoInstallDeferred"), 5500),
+    ).catch((err) => {
+      console.warn("Automatic update install failed:", err);
+    });
+  }, [isSetupComplete, config, indexingStatus, flash, ts, updateBlocked]);
+
   const handleCopyPath = useCallback(
     (path: string) => {
       navigator.clipboard.writeText(path).then(
@@ -1561,7 +1619,21 @@ function App() {
                 </div>
               )}
 
-              <KeyHintStrip status={indexingStatus} doctor={doctorReport} updateAvailable={updateAvailable} onDoctor={() => { setShowSettings(true); setSettingsSection("doctor"); }} onUpdate={() => { setShowSettings(true); setSettingsSection("about"); }} />
+              <KeyHintStrip status={indexingStatus} doctor={doctorReport} update={updateActivity ?? (updateBlocked ? { phase: "failed", version: "" } : updateAvailable ? { phase: "available", version: updateAvailable } : null)} onDoctor={() => { setShowSettings(true); setSettingsSection("doctor"); }} onUpdate={() => {
+                if (updateActivity?.phase === "ready") {
+                  installReadyUpdate(
+                    () => flash(ts("about.autoInstallRestarting"), 5500),
+                    () => flash(ts("about.autoInstallDeferred"), 5500),
+                  ).catch((err) => {
+                    console.warn("Update install failed:", err);
+                    setShowSettings(true);
+                    setSettingsSection("about");
+                  });
+                  return;
+                }
+                setShowSettings(true);
+                setSettingsSection("about");
+              }} />
             </>
           )}
         </>

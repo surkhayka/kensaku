@@ -212,6 +212,7 @@
   "about": {
     "resetPending": "有一个待处理的重置，将在下次启动时完成。",
     "version": "版本",
+    "whatsNew": "{{version}} 新功能",
     "autoUpdate": "默认启用自动检查更新。",
     "checkUpdates": "检查更新",
     "opening": "正在打开…",
@@ -261,6 +262,10 @@
     "reportIssue": "反馈问题",
     "autoUpdateSetting": "自动检查更新",
     "autoUpdateSettingDesc": "在后台定期检查新版本与功能优化。",
+    "autoInstallSetting": "自动安装更新",
+    "autoInstallSettingDesc": "在后台下载并安装已签名版本，并在空闲时重启 Kensaku。索引期间会跳过；可随时关闭。",
+    "autoInstallRestarting": "更新已下载。Kensaku 将在几秒后重启以完成安装。",
+    "autoInstallDeferred": "更新已下载，但 Kensaku 正在索引。下次启动时将完成安装。",
     "checking": "正在检查更新…",
     "upToDate": "Kensaku 已是最新版本",
     "updateAvailable": "新版本 {{version}} 可用",

@@ -28,11 +28,57 @@ The manifest itself is not signed, but every artifact it points to is. A forged
 manifest cannot produce a valid minisign signature, so the updater rejects the
 download.
 
+## Automatic installs
+
+On by default for new installs and for configurations that predate the setting.
+It can be turned off on the last step of first-run setup or later in
+**Settings → About → Install updates automatically**.
+
+When setup is complete and the app is idle, Kensaku checks for a signed update
+at startup, downloads it in the background with progress in the status bar, and
+shows a 5-second "Restarting in Ns" notice. It re-reads the live indexing status
+after the countdown, and only then installs the update and relaunches.
+
+Installing also waits until the window is hidden or another application has
+focus. Kensaku never restarts a window you are working in: while you are looking
+at it, the status bar offers **Restart to update** and the install happens later,
+unattended. Clicking it is consent and installs straight away, except during a
+crawl.
+
+A crawl that starts during the download or the countdown defers the install
+rather than cancelling it. The notice says the update is waiting for indexing,
+and the app retries every 20 seconds for up to 2 hours, installing as soon as
+indexing is idle. If indexing is still running after 2 hours, the update stays
+downloaded and ready; it installs on a later launch or when the user installs it
+from Settings.
+
+If an install does not take — the app comes back on the old version — the next
+launch stops the automatic path for that session and shows **Update failed** in
+the status bar instead of re-downloading and restarting in a loop. Settings →
+About still offers the manual download.
+
+Unattended installs are skipped for installs that must update through their own
+package: MSI, portable, `.deb`, and `.rpm` copies still show "Update available"
+and open the release page.
+
+## Update indicator
+
+The bottom status bar shows the update lifecycle, from left to right:
+
+| State | Indicator | Click |
+|---|---|---|
+| Available | "Update 1.0.21" | Opens **Settings → About** |
+| Downloading | "Downloading 42%" with a thin progress bar | None |
+| Ready | "Restart to update" | Installs and restarts immediately |
+| Restarting | "Restarting in 4s" | None |
+| Deferred | "Update waits for index" | None |
+| Failed | "Update failed" | Opens **Settings → About** to show the error |
+
 ## First install vs updates
 
 - **Linux / macOS / Windows one-liner or AppImage/NSIS/macOS app:** the
-  installer sets up 1.0.19, then the in-app updater handles later releases. The
-  first install of 1.0.19 is the migration step for older versions.
+  installer sets up 1.0.20, then the in-app updater handles later releases. The
+  first install of 1.0.20 is the migration step for older versions.
 - **`.deb` / `.rpm`:** install and update through the package manager. The
   in-app updater refuses these installs so it cannot overwrite a package-owned
   binary.
