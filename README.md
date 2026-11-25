@@ -83,6 +83,8 @@ Full reference: [docs/USAGE.md](docs/USAGE.md).
 
 ## Install
 
+**[Download Kensaku](https://yjid.github.io/kensaku/)** for Windows, macOS, or Linux. [All release assets](https://github.com/yjid/kensaku/releases/latest) are available on GitHub.
+
 **Linux or macOS**
 
 ```bash

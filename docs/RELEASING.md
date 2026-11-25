@@ -109,6 +109,9 @@ gh release download vX.Y.Z -D /tmp/kensaku-release
 (cd /tmp/kensaku-release && sha256sum -c SHA256SUMS)
 ```
 
+Include the [Kensaku download page](https://yjid.github.io/kensaku/) in the release notes. The page uses the latest stable release, so use the direct tag link for canary testers.
+For stable releases, update the version and installer links in `site/index.html` so the static download links stay current for visitors with JavaScript disabled.
+
 Check that the expected assets are present:
 
 | Asset | Platform |
