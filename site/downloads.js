@@ -1,8 +1,9 @@
 "use strict";
 
 const releases = "https://github.com/yjid/kensaku/releases";
-const latest = releases + "/latest";
 const endpoint = "https://api.github.com/repos/yjid/kensaku/releases/latest";
+const cacheKey = "kensaku:latest-release";
+const cacheLifetime = 6 * 60 * 60 * 1000;
 
 function highlightPlatform() {
   const agent = navigator.userAgent;
@@ -26,44 +27,87 @@ function highlightPlatform() {
   }
 }
 
-function useReleasePage(link) {
-  link.href = latest;
-  link.removeAttribute("aria-label");
-  link.textContent = link.textContent.trim().replace(/\s*↓$/, "") + " · Releases ↗";
+function validRelease(release) {
+  return release &&
+    typeof release.tag === "string" &&
+    /^v\d+\.\d+\.\d+$/.test(release.tag) &&
+    Array.isArray(release.filenames) &&
+    release.filenames.every((name) => typeof name === "string");
+}
+
+function readCachedRelease() {
+  try {
+    const release = JSON.parse(localStorage.getItem(cacheKey));
+    if (!validRelease(release) || !Number.isFinite(release.fetchedAt)) return null;
+    const age = Date.now() - release.fetchedAt;
+    return age >= 0 && age < cacheLifetime ? release : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRelease() {
+  const response = await fetch(endpoint, {
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal: globalThis.AbortSignal?.timeout?.(4500),
+  });
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  if (!Array.isArray(data?.assets) || data.draft || data.prerelease) return null;
+  const release = {
+    tag: data.tag_name,
+    filenames: data.assets.map((asset) => asset?.name),
+    fetchedAt: Date.now(),
+  };
+  if (!validRelease(release)) return null;
+
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(release));
+  } catch {
+    // The current visit can still use the fetched release when storage is blocked.
+  }
+  return release;
+}
+
+function installerName(template, version, filenames) {
+  if (template === "rpm") {
+    const rpmPrefix = `kensaku-${version}-`;
+    return filenames.find((name) => name.startsWith(rpmPrefix) &&
+      /^\d+\.x86_64\.rpm$/.test(name.slice(rpmPrefix.length)));
+  }
+  const filename = template.replace("{version}", version);
+  return filenames.includes(filename) ? filename : undefined;
 }
 
 async function updateDownloads() {
-  const links = document.querySelectorAll("[data-asset]");
-  const status = document.querySelector("[data-release-status]");
+  // The HTML already points to GitHub Releases if the lookup is unavailable.
+  const release = readCachedRelease() ?? await fetchRelease().catch(() => null);
+  if (!release) return;
 
-  try {
-    const response = await fetch(endpoint, {
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      signal: globalThis.AbortSignal?.timeout?.(4500),
-    });
-    if (!response.ok) throw new Error("Release lookup failed");
+  const downloadBase = `${releases}/download/${release.tag}`;
+  const version = release.tag.slice(1);
+  for (const link of document.querySelectorAll("[data-asset]")) {
+    const filename = installerName(link.dataset.asset, version, release.filenames);
+    if (!filename) continue;
 
-    const release = await response.json();
-    if (!/^v\d+\.\d+\.\d+$/.test(release.tag_name) || !Array.isArray(release.assets)) {
-      throw new Error("Unexpected release metadata");
+    link.href = `${downloadBase}/${filename}`;
+    link.querySelector("[data-release-label]").hidden = true;
+    if (link.dataset.installerLabel) {
+      link.setAttribute("aria-label", link.dataset.installerLabel);
+      link.querySelector("[data-link-arrow]").textContent = "↓";
     }
-
-    const { tag_name: tag, assets } = release;
-    const filenames = new Set(assets.map((asset) => asset?.name));
-    for (const link of links) {
-      const filename = link.dataset.asset.replace("{version}", tag.slice(1));
-      if (filenames.has(filename)) {
-        link.href = `${releases}/download/${tag}/${filename}`;
-      } else {
-        useReleasePage(link);
-      }
-    }
-    status.textContent = `Release ${tag}`;
-  } catch {
-    for (const link of links) useReleasePage(link);
-    status.textContent = "Latest release on GitHub";
   }
+
+  const checksums = document.querySelector("[data-release-checksums]");
+  if (release.filenames.includes("SHA256SUMS")) {
+    checksums.href = `${downloadBase}/SHA256SUMS`;
+  } else {
+    checksums.href = `${releases}/tag/${release.tag}`;
+    checksums.textContent = "Release details (checksums unavailable)";
+  }
+  document.querySelector("[data-release-status]").textContent = `Release ${release.tag}`;
 }
 
 highlightPlatform();
